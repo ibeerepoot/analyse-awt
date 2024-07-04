@@ -6,6 +6,7 @@ from io import StringIO
 from datetime import datetime, timedelta
 import re
 import csv
+import altair as alt
 
 """
 # Let's analyse your AWT data!
@@ -303,11 +304,11 @@ if awt_uploaded_file is not None and google_maps_uploaded_file is not None and s
     def interpret_correlation_score(r, var1, var2):
         if r > 0.7:
             return f"Strong Positive Correlation: As `{var1}` increases, there is a strong tendency for `{var2}` to also increase, but not necessarily at a constant rate."
-        #elif r > 0.3:
+        elif r > 0.3:
             return f"Moderate Positive Correlation: As `{var1}` increases, there is a noticeable tendency for `{var2}` to also increase."
         elif r < -0.7:
             return f"Strong Negative Correlation: As `{var1}` increases, there is a strong tendency for `{var2}` to decrease at a consistent rate."
-        #elif r < -0.3:
+        elif r < -0.3:
             return f"Moderate Negative Correlation: As `{var1}` increases, there is a noticeable tendency for `{var2}` to decrease."
         else:
             return "No strong or moderate correlation."
@@ -331,9 +332,12 @@ if awt_uploaded_file is not None and google_maps_uploaded_file is not None and s
             html += '<tr>'
             html += f'<td style="border: none; padding: 8px; font-weight: bold;">{data.columns[i]}</td>'  # Row label
             for j in range(n):
-                value = data.iloc[i, j]
-                color = 'background-color: lightblue;' if i == j else f'background-color: rgba(100, 149, 237, {abs(value) / 1.5});'
-                html += f'<td style="border: none; padding: 8px; {color}">{value:.2f}</td>'
+                if j > i:  # Display only upper triangle of the matrix
+                    value = data.iloc[i, j]
+                    color = 'background-color: lightblue;' if i == j else f'background-color: rgba(100, 149, 237, {abs(value) / 1.5});'
+                    html += f'<td style="border: none; padding: 8px; {color}">{value:.2f}</td>'
+                else:
+                    html += '<td style="border: none;"></td>'
             html += '</tr>'
         html += '</table>'
         return html
@@ -343,10 +347,23 @@ if awt_uploaded_file is not None and google_maps_uploaded_file is not None and s
 
     # Display interpretations of correlation coefficients
     st.write("## Interpretation of Correlation Scores")
-    for col in correlation_matrix.columns:
-        for index, value in correlation_matrix[col].items():
-            if col != index:
+    for i, col in enumerate(correlation_matrix.columns):
+        for j, index in enumerate(correlation_matrix.columns):
+            if j > i:  # Process only upper triangle of the matrix
+                value = correlation_matrix.iloc[i, j]
                 interpretation = interpret_correlation_score(value, col, index)
                 if "No strong or moderate correlation." not in interpretation:
-                    #st.write(f"**Correlation between `{col}` and `{index}`:**")
+                    st.write(f"**Correlation between `{col}` and `{index}`:**")
                     st.write(interpretation)
+                    # Generate scatterplot for strong and moderate positive and negative correlations
+                    if abs(value) > 0.3:
+                        chart_data = dataframe_days[[col, index]]
+                        chart = alt.Chart(chart_data).mark_circle().encode(
+                            x=col,
+                            y=index,
+                            tooltip=[col, index]
+                        ).properties(
+                            width=400,
+                            height=300
+                        )
+                        st.altair_chart(chart)
