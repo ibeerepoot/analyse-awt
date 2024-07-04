@@ -1,5 +1,0 @@
-altair
-pandas
-streamlit
-io
-matplotlib
