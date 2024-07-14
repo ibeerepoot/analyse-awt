@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 import re
 import csv
 import altair as alt
+import zipfile
 
 """
 # Let's analyse your AWT data!
@@ -15,34 +16,49 @@ import altair as alt
 # Sidebar for accepting input parameters
 with st.sidebar:
     # Load AWT data
-    st.header('Load your data')
+    st.header('Upload your data')
     st.markdown('**1. AWT data**')
     awt_uploaded_file = st.file_uploader("Upload your Tockler data here. You can export your data by going to Tockler > Search > Set a time period > Export to CSV.")
 
     # Load Google Maps data
     st.markdown('**2. Google Maps Timeline**')
-    google_maps_uploaded_file = st.file_uploader("Upload your Google Maps Timeline data here. You can export your data by going to https://myaccount.google.com/yourdata/maps?hl=en > Download your Maps data > Check Location History (Timeline). There should be one JSON file per month.")
+    google_maps_uploaded_files = st.file_uploader("Upload your Google Maps Timeline data here. You can export your data by going to https://myaccount.google.com/yourdata/maps?hl=en > Download your Maps data > Check Location History (Timeline). There should be one JSON file per month.", type='json', accept_multiple_files=True)
 
     # Load Survey results data
     st.markdown('**3. Survey results**')
     survey_uploaded_file = st.file_uploader("Upload your survey results here. The CSV should contain 5 columns: Date, Productivity, Vigor, Dedication, Absorption.")
+
+    # Load stress data
+    st.markdown('**4. Stress data**')
+    stress_data_zip = st.file_uploader("Upload your stress data (ZIP file) here.", type='zip')
+
+    # Load heart rate data
+    st.markdown('**5. Heart rate data**')
+    heart_rate_data_zip = st.file_uploader("Upload your heart rate data (ZIP file) here.", type='zip')
 
 # Main section for processing AWT data
 if awt_uploaded_file is not None:
     try:
         # Read the uploaded CSV file into a dataframe
         awt_stringio = StringIO(awt_uploaded_file.getvalue().decode('latin1'))
-        dialect = csv.Sniffer().sniff(awt_stringio.read(1024))
-        awt_stringio.seek(0)
-        dataframe_awt = pd.read_csv(awt_stringio, delimiter=dialect.delimiter)
+        
+        # Explicitly set the delimiter as semicolon
+        dataframe_awt = pd.read_csv(awt_stringio, delimiter=';')
 
         # Drop the 'Type' column if it exists
         if 'Type' in dataframe_awt.columns:
             dataframe_awt = dataframe_awt.drop(columns=['Type'])
 
         # Display the first 5 rows of the dataframe
-        st.write("Snippet of the raw AWT data:")
-        st.write(dataframe_awt.head())
+        # st.write("Snippet of the raw AWT data:")
+        # st.write(dataframe_awt.head())
+
+        # Remove rows where 'Begin' is empty
+        dataframe_awt = dataframe_awt.dropna(subset=['Begin'])
+        dataframe_awt = dataframe_awt[dataframe_awt['Begin'] != '']
+
+        # Remove rows where 'Title' is 'NO_TITLE'
+        dataframe_awt = dataframe_awt[dataframe_awt['Title'] != 'NO_TITLE']
 
         # Initialize lists to store merged rows
         merged_rows = []
@@ -105,45 +121,88 @@ def format_timestamp(timestamp):
     else:
         raise ValueError(f"Invalid timestamp format: {timestamp}")
 
-# Check if a Google Maps file has been uploaded 
-if google_maps_uploaded_file is not None:
-    # Read the JSON file
-    maps_data = json.load(google_maps_uploaded_file)
+# Function to process stress data from a ZIP file and return a DataFrame
+def process_stress_data_from_zip(zip_file, data_type):
+    dataframes = []
+    with zipfile.ZipFile(zip_file, 'r') as zip_ref:
+        for file_info in zip_ref.infolist():
+            if file_info.filename.endswith('.json'):
+                with zip_ref.open(file_info) as file:
+                    json_content = json.load(file)
+                    df = pd.DataFrame(json_content)
+                    df['start_time'] = pd.to_datetime(df['start_time'], unit='ms')
+                    df['end_time'] = pd.to_datetime(df['end_time'], unit='ms')
+                    df['Date'] = df['start_time'].dt.date
+                    df['hour'] = df['start_time'].dt.hour  # Extract hour of day
+                    df['day_of_week'] = df['start_time'].dt.day_name()  # Extract day of week
+                    df['week_in_year'] = df['start_time'].dt.strftime('%U').astype(int)  # Week number in year
+                    dataframes.append(df)
+    combined_df = pd.concat(dataframes, ignore_index=True)
+    if 'score' in combined_df.columns:
+        combined_df['score'] = pd.to_numeric(combined_df['score'], errors='coerce')
+    return combined_df
 
-    # Initialize an empty list to store the place visits
+# Function to process heart rate data from a ZIP file and return a DataFrame
+def process_heart_rate_data_from_zip(zip_file, data_type):
+    dataframes = []
+    with zipfile.ZipFile(zip_file, 'r') as zip_ref:
+        for file_info in zip_ref.infolist():
+            if file_info.filename.endswith('.json'):
+                with zip_ref.open(file_info) as file:
+                    json_content = json.load(file)
+                    df = pd.DataFrame(json_content)
+                    df['start_time'] = pd.to_datetime(df['start_time'], unit='ms')
+                    df['end_time'] = pd.to_datetime(df['end_time'], unit='ms')
+                    df['Date'] = df['start_time'].dt.date
+                    df['hour'] = df['start_time'].dt.hour  # Extract hour of day
+                    df['day_of_week'] = df['start_time'].dt.day_name()  # Extract day of week
+                    df['week_in_year'] = df['start_time'].dt.strftime('%U').astype(int)  # Week number in year
+                    dataframes.append(df)
+    combined_df = pd.concat(dataframes, ignore_index=True)
+    if 'heart_rate' in combined_df.columns:
+        combined_df['heart_rate'] = pd.to_numeric(combined_df['heart_rate'], errors='coerce')
+    return combined_df
+
+# Check if Google Maps files have been uploaded 
+if google_maps_uploaded_files:
     place_visits = []
 
-    # Iterate over each entry in the JSON data
-    for entry in maps_data.get("timelineObjects", []):
-        if "placeVisit" in entry:
-            place_visit = entry["placeVisit"]
-            location = place_visit.get("location", {})
-            duration = place_visit.get("duration", {})
+    # Iterate over each uploaded file
+    for uploaded_file in google_maps_uploaded_files:
+        # Read the JSON file
+        maps_data = json.load(uploaded_file)
 
-            # Extract the required information
-            place_visited = location.get("address", "Unknown")
-            start_visit = duration.get("startTimestamp", "Unknown")
-            end_visit = duration.get("endTimestamp", "Unknown")
+        # Iterate over each entry in the JSON data
+        for entry in maps_data.get("timelineObjects", []):
+            if "placeVisit" in entry:
+                place_visit = entry["placeVisit"]
+                location = place_visit.get("location", {})
+                duration = place_visit.get("duration", {})
 
-            # Format the timestamps
-            if start_visit != "Unknown":
-                start_visit = format_timestamp(start_visit)
-            if end_visit != "Unknown":
-                end_visit = format_timestamp(end_visit)
+                # Extract the required information
+                place_visited = location.get("address", "Unknown")
+                start_visit = duration.get("startTimestamp", "Unknown")
+                end_visit = duration.get("endTimestamp", "Unknown")
 
-            # Append the data as a dictionary to the list
-            place_visits.append({
-                "Place_visited": place_visited,
-                "Start_visit": start_visit,
-                "End_visit": end_visit
-            })
+                # Format the timestamps
+                if start_visit != "Unknown":
+                    start_visit = format_timestamp(start_visit)
+                if end_visit != "Unknown":
+                    end_visit = format_timestamp(end_visit)
+
+                # Append the data as a dictionary to the list
+                place_visits.append({
+                    "Place_visited": place_visited,
+                    "Start_visit": start_visit,
+                    "End_visit": end_visit
+                })
 
     # Create a DataFrame from the list of place visits
     dataframe_locations = pd.DataFrame(place_visits, columns=["Place_visited", "Start_visit", "End_visit"])
 
     # Display the DataFrame in Streamlit
-    st.write("Google Maps locations visited:")
-    st.write(dataframe_locations)
+    # st.write("Google Maps locations visited:")
+    # st.write(dataframe_locations)
 
     # Initialize a list to store the enriched rows
     enriched_rows = []
@@ -175,8 +234,8 @@ if google_maps_uploaded_file is not None:
     dataframe_merged_awt_with_locations = pd.DataFrame(enriched_rows)
 
     # Display the enriched DataFrame in Streamlit
-    st.write("Enriched AWT data with locations:")
-    st.write(dataframe_merged_awt_with_locations)
+    # st.write("Enriched AWT data with locations:")
+    # st.write(dataframe_merged_awt_with_locations)
 
 # Check if a Survey results file has been uploaded
 if survey_uploaded_file is not None:
@@ -188,8 +247,8 @@ if survey_uploaded_file is not None:
         dataframe_survey = pd.read_csv(survey_stringio, delimiter=dialect.delimiter)
 
         # Display the first 5 rows of the dataframe
-        st.write("Snippet of the survey results data:")
-        st.write(dataframe_survey.head())
+        # st.write("Snippet of the survey results data:")
+        # st.write(dataframe_survey.head())
 
         # Convert survey date format to match
         dataframe_survey['Date'] = pd.to_datetime(dataframe_survey['Date'], format='%d-%m-%Y').dt.strftime('%Y-%m-%d')
@@ -199,8 +258,158 @@ if survey_uploaded_file is not None:
     except Exception as e:
         st.error(f"An unexpected error occurred: {e}")
 
+# Process stress data if uploaded
+if stress_data_zip:
+    stress_data_df = process_stress_data_from_zip(stress_data_zip, 'score')
+    if 'hour' not in stress_data_df.columns:
+        st.error("Hour column missing in stress data.")
+    else:
+        # Calculate average stress score per hour
+        average_stress_per_hour = stress_data_df.groupby('hour').agg(
+            average_value=('score', 'mean')
+        ).reset_index()
+        average_stress_per_hour['data_type'] = 'Stress'  # Add data type for legend
+
+# Process heart rate data if uploaded
+if heart_rate_data_zip:
+    heart_rate_data_df = process_heart_rate_data_from_zip(heart_rate_data_zip, 'heart_rate')
+    if 'hour' not in heart_rate_data_df.columns:
+        st.error("Hour column missing in heart rate data.")
+    else:
+        # Calculate average heart rate per hour
+        average_heart_rate_per_hour = heart_rate_data_df.groupby('hour').agg(
+            average_value=('heart_rate', 'mean')
+        ).reset_index()
+        average_heart_rate_per_hour['data_type'] = 'Heart Rate'  # Add data type for legend
+
+# Process stress data if uploaded
+if stress_data_zip:
+    stress_data_df = process_stress_data_from_zip(stress_data_zip, 'score')
+    average_stress_per_day = stress_data_df.groupby('Date').agg(
+        Average_stress=('score', 'mean')
+    ).reset_index()
+    
+# Process heart rate data if uploaded
+if heart_rate_data_zip:
+    heart_rate_data_df = process_heart_rate_data_from_zip(heart_rate_data_zip, 'heart_rate')
+    average_hr_per_day = heart_rate_data_df.groupby('Date').agg(
+        Average_HR=('heart_rate', 'mean')
+    ).reset_index()
+
+if stress_data_zip and heart_rate_data_zip:
+
+    # Merge average stress and heart rate per hour
+    combined_hourly_df = pd.concat([average_stress_per_hour, average_heart_rate_per_hour], ignore_index=True)
+
+    # Plot average stress and heart rate per hour
+    if 'hour' in combined_hourly_df.columns:
+        st.subheader("Average Stress and Heart Rate Per Hour")
+        stress_heart_rate_hourly_chart = alt.Chart(combined_hourly_df).mark_circle(size=60).encode(
+            x='hour:O',
+            y='average_value:Q',
+            color=alt.Color('data_type:N', scale=alt.Scale(domain=['Stress', 'Heart Rate'], range=['purple', 'steelblue'])),
+            tooltip=['hour:O', 'average_value:Q']
+        ).properties(
+            width=800,
+            height=400
+        ).interactive()
+
+        st.altair_chart(stress_heart_rate_hourly_chart, use_container_width=True)
+    else:
+        st.warning("No data available to plot.")
+
+    # Process stress data if uploaded
+    if stress_data_zip:
+        stress_data_df = process_stress_data_from_zip(stress_data_zip, 'score')
+        if 'day_of_week' not in stress_data_df.columns:
+            st.error("Day of week column missing in stress data.")
+        else:
+            # Calculate average stress score per day of week
+            average_stress_per_day_of_week = stress_data_df.groupby('day_of_week').agg(
+                average_value=('score', 'mean')
+            ).reset_index()
+            average_stress_per_day_of_week['data_type'] = 'Stress'  # Add data type for legend
+
+    # Process heart rate data if uploaded
+    if heart_rate_data_zip:
+        heart_rate_data_df = process_heart_rate_data_from_zip(heart_rate_data_zip, 'heart_rate')
+        if 'day_of_week' not in heart_rate_data_df.columns:
+            st.error("Day of week column missing in heart rate data.")
+        else:
+            # Calculate average heart rate per day of week
+            average_heart_rate_per_day_of_week = heart_rate_data_df.groupby('day_of_week').agg(
+                average_value=('heart_rate', 'mean')
+            ).reset_index()
+            average_heart_rate_per_day_of_week['data_type'] = 'Heart Rate'  # Add data type for legend
+
+    # Merge average stress and heart rate per day of week
+    combined_daily_of_week_df = pd.concat([average_stress_per_day_of_week, average_heart_rate_per_day_of_week], ignore_index=True)
+
+    # Plot average stress and heart rate per day of week
+    if 'day_of_week' in combined_daily_of_week_df.columns:
+        st.subheader("Average Stress and Heart Rate Per Day of Week")
+        stress_heart_rate_day_of_week_chart = alt.Chart(combined_daily_of_week_df).mark_circle(size=60).encode(
+            x=alt.X('day_of_week:N', sort=['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']),
+            y='average_value:Q',
+            color=alt.Color('data_type:N', scale=alt.Scale(domain=['Stress', 'Heart Rate'], range=['purple', 'steelblue'])),
+            tooltip=['day_of_week:N', 'average_value:Q']
+        ).properties(
+            width=800,
+            height=400
+        ).interactive()
+
+        st.altair_chart(stress_heart_rate_day_of_week_chart, use_container_width=True)
+    else:
+        st.warning("No data available to plot.")
+
+    # Process stress data if uploaded
+    if stress_data_zip:
+        stress_data_df = process_stress_data_from_zip(stress_data_zip, 'score')
+        if 'week_in_year' not in stress_data_df.columns:
+            st.error("Week in year column missing in stress data.")
+        else:
+            # Calculate average stress score per week in year
+            average_stress_per_week = stress_data_df.groupby('week_in_year').agg(
+                average_value=('score', 'mean'),
+                week_start_date=('start_time', lambda x: (x.min() - timedelta(days=x.min().weekday())).strftime('%Y-%m-%d'))
+            ).reset_index()
+            average_stress_per_week['data_type'] = 'Stress'  # Add data type for legend
+
+    # Process heart rate data if uploaded
+    if heart_rate_data_zip:
+        heart_rate_data_df = process_heart_rate_data_from_zip(heart_rate_data_zip, 'heart_rate')
+        if 'week_in_year' not in heart_rate_data_df.columns:
+            st.error("Week in year column missing in heart rate data.")
+        else:
+            # Calculate average heart rate per week in year
+            average_heart_rate_per_week = heart_rate_data_df.groupby('week_in_year').agg(
+                average_value=('heart_rate', 'mean'),
+                week_start_date=('start_time', lambda x: (x.min() - timedelta(days=x.min().weekday())).strftime('%Y-%m-%d'))
+            ).reset_index()
+            average_heart_rate_per_week['data_type'] = 'Heart Rate'  # Add data type for legend
+
+    # Merge average stress and heart rate per week in year
+    combined_weekly_df = pd.concat([average_stress_per_week, average_heart_rate_per_week], ignore_index=True)
+
+    # Plot average stress and heart rate per week in year
+    if 'week_in_year' in combined_weekly_df.columns:
+        st.subheader("Average Stress and Heart Rate Per Week in Year")
+        stress_heart_rate_weekly_chart = alt.Chart(combined_weekly_df).mark_circle(size=60).encode(
+            x=alt.X('week_start_date:T', axis=alt.Axis(title='Week Start Date')),
+            y='average_value:Q',
+            color=alt.Color('data_type:N', scale=alt.Scale(domain=['Stress', 'Heart Rate'], range=['purple', 'steelblue'])),
+            tooltip=['week_start_date:T', 'average_value:Q']
+        ).properties(
+            width=800,
+            height=400
+        ).interactive()
+
+        st.altair_chart(stress_heart_rate_weekly_chart, use_container_width=True)
+    else:
+        st.warning("No data available to plot.")
+
 # Process data to create dataframe_days
-if awt_uploaded_file is not None and google_maps_uploaded_file is not None and survey_uploaded_file is not None:
+if awt_uploaded_file is not None and google_maps_uploaded_files and survey_uploaded_file and stress_data_zip and heart_rate_data_zip is not None:
     try:
         # Initialize a list to store the day-wise data
         day_rows = []
@@ -216,6 +425,9 @@ if awt_uploaded_file is not None and google_maps_uploaded_file is not None and s
             # Get start time (minimum Begin) and end time (maximum End) for the day
             start_time = filtered_data['Begin'].min()
             end_time = filtered_data['End'].max()
+
+            started_day = start_time.hour + start_time.minute/60.0
+            ended_day = end_time.hour + end_time.minute/60.0
 
             # Calculate total computer time for the day in hours (with two decimal places)
             total_computer_time = (pd.to_datetime(filtered_data['End']) - pd.to_datetime(filtered_data['Begin'])).sum().total_seconds() / 3600
@@ -266,7 +478,9 @@ if awt_uploaded_file is not None and google_maps_uploaded_file is not None and s
             day_rows.append({
                 "Date": date,
                 "Start_time": start_time,
+                "Day_started": started_day,
                 "End_time": end_time,
+                "Day_ended": ended_day,
                 "Total_computer_time": round(total_computer_time, 2),
                 "Computer_breaks_num": breaks_count,
                 "Computer_breaks_total_duration": round(breaks_duration_hours, 2),
@@ -280,8 +494,12 @@ if awt_uploaded_file is not None and google_maps_uploaded_file is not None and s
                 "Work_engagement": work_engagement
             })
 
-        # Create the dataframe_days DataFrame
+        # Create a new DataFrame with the day-wise data
         dataframe_days = pd.DataFrame(day_rows)
+
+        # Merge average stress and heart rate data with dataframe_days
+        dataframe_days = pd.merge(dataframe_days, average_stress_per_day, on='Date', how='left')
+        dataframe_days = pd.merge(dataframe_days, average_hr_per_day, on='Date', how='left')
 
         # Display the dataframe_days in Streamlit
         st.write("Final dataframe_days:")
