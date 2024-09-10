@@ -50,8 +50,8 @@ if awt_uploaded_file is not None:
             dataframe_awt = dataframe_awt.drop(columns=['Type'])
 
         # Display the first 5 rows of the dataframe
-        # st.write("Snippet of the raw AWT data:")
-        # st.write(dataframe_awt.head())
+        st.write("Snippet of the raw AWT data:")
+        st.write(dataframe_awt.head())
 
         # Remove rows where 'Begin' is empty
         dataframe_awt = dataframe_awt.dropna(subset=['Begin'])
@@ -100,6 +100,16 @@ if awt_uploaded_file is not None:
         # Reset the index of the new DataFrame
         dataframe_merged_awt.reset_index(drop=True, inplace=True)
 
+        # Define a custom function to find the most occurring title in a semicolon-separated string
+        def find_most_occurring_title(merged_titles):
+            titles = merged_titles.split(';')
+            title_counts = pd.Series(titles).value_counts()
+            most_occuring_title = title_counts.idxmax()
+            return most_occuring_title
+
+        # Apply the custom function to each row in the DataFrame and create a new column
+        dataframe_merged_awt['Most_occuring_title'] = dataframe_merged_awt['Title'].apply(find_most_occurring_title)
+
         st.write("AWT data merged to continued work slots:")
         st.write(dataframe_merged_awt.head())
 
@@ -122,7 +132,7 @@ def format_timestamp(timestamp):
         raise ValueError(f"Invalid timestamp format: {timestamp}")
 
 # Function to process stress data from a ZIP file and return a DataFrame
-def process_stress_data_from_zip(zip_file, data_type):
+def process_stress_data_from_zip(zip_file):
     dataframes = []
     with zipfile.ZipFile(zip_file, 'r') as zip_ref:
         for file_info in zip_ref.infolist():
@@ -143,7 +153,7 @@ def process_stress_data_from_zip(zip_file, data_type):
     return combined_df
 
 # Function to process heart rate data from a ZIP file and return a DataFrame
-def process_heart_rate_data_from_zip(zip_file, data_type):
+def process_heart_rate_data_from_zip(zip_file):
     dataframes = []
     with zipfile.ZipFile(zip_file, 'r') as zip_ref:
         for file_info in zip_ref.infolist():
@@ -162,6 +172,38 @@ def process_heart_rate_data_from_zip(zip_file, data_type):
     if 'heart_rate' in combined_df.columns:
         combined_df['heart_rate'] = pd.to_numeric(combined_df['heart_rate'], errors='coerce')
     return combined_df
+
+# Calculate average values per hour, day, day of week, and week
+def calculate_averages(df, value_column, groupby_column, new_column_name, data_type):
+    return df.groupby(groupby_column).agg(
+        **{new_column_name: (value_column, 'mean')}
+    ).reset_index().assign(data_type=data_type)
+
+# Calculate weekly averages
+def calculate_weekly_averages(df, value_column, new_column_name, data_type):
+    return df.groupby('week_in_year').agg(
+        **{new_column_name: (value_column, 'mean')},
+        week_start_date=('start_time', lambda x: (x.min() - timedelta(days=x.min().weekday())).strftime('%Y-%m-%d'))
+    ).reset_index().assign(data_type=data_type)
+
+# Plotting functions
+def plot_data(df, x_column, y_column, x_title, y_title, chart_title, color_scale, sort_x=None, width=800, height=400):
+    x_encoding = alt.X(f'{x_column}:O', axis=alt.Axis(title=x_title), sort=sort_x)
+    if x_column == 'Date':
+        x_encoding = alt.X(f'{x_column}:T', axis=alt.Axis(title=x_title))
+    if x_column == 'week_start_date':
+        x_encoding = alt.X(f'{x_column}:T', axis=alt.Axis(title=x_title))
+
+    return alt.Chart(df).mark_circle(size=60).encode(
+        x=x_encoding,
+        y=alt.Y(f'{y_column}:Q', axis=alt.Axis(title=y_title)),
+        color=alt.Color('data_type:N', scale=alt.Scale(domain=['Stress', 'Heart Rate'], range=color_scale)),
+        tooltip=[f'{x_column}:O' if x_column not in ['Date', 'week_start_date'] else f'{x_column}:T', f'{y_column}:Q']
+    ).properties(
+        width=width,
+        height=height,
+        title=chart_title
+    ).interactive()
 
 # Check if Google Maps files have been uploaded 
 if google_maps_uploaded_files:
@@ -258,155 +300,48 @@ if survey_uploaded_file is not None:
     except Exception as e:
         st.error(f"An unexpected error occurred: {e}")
 
-# Process stress data if uploaded
-if stress_data_zip:
-    stress_data_df = process_stress_data_from_zip(stress_data_zip, 'score')
-    if 'hour' not in stress_data_df.columns:
-        st.error("Hour column missing in stress data.")
-    else:
-        # Calculate average stress score per hour
-        average_stress_per_hour = stress_data_df.groupby('hour').agg(
-            average_value=('score', 'mean')
-        ).reset_index()
-        average_stress_per_hour['data_type'] = 'Stress'  # Add data type for legend
+# Merge data and plot charts
+if stress_data_zip is not None and heart_rate_data_zip is not None:
+    # Process data if uploaded
+    stress_data_df = process_stress_data_from_zip(stress_data_zip) if stress_data_zip else None
+    heart_rate_data_df = process_heart_rate_data_from_zip(heart_rate_data_zip) if heart_rate_data_zip else None
 
-# Process heart rate data if uploaded
-if heart_rate_data_zip:
-    heart_rate_data_df = process_heart_rate_data_from_zip(heart_rate_data_zip, 'heart_rate')
-    if 'hour' not in heart_rate_data_df.columns:
-        st.error("Hour column missing in heart rate data.")
-    else:
-        # Calculate average heart rate per hour
-        average_heart_rate_per_hour = heart_rate_data_df.groupby('hour').agg(
-            average_value=('heart_rate', 'mean')
-        ).reset_index()
-        average_heart_rate_per_hour['data_type'] = 'Heart Rate'  # Add data type for legend
+    st.subheader("Stress and heart rate data")
+    st.write(stress_data_df)
+    st.write(heart_rate_data_df)
 
-# Process stress data if uploaded
-if stress_data_zip:
-    stress_data_df = process_stress_data_from_zip(stress_data_zip, 'score')
-    average_stress_per_day = stress_data_df.groupby('Date').agg(
-        Average_stress=('score', 'mean')
-    ).reset_index()
-    
-# Process heart rate data if uploaded
-if heart_rate_data_zip:
-    heart_rate_data_df = process_heart_rate_data_from_zip(heart_rate_data_zip, 'heart_rate')
-    average_hr_per_day = heart_rate_data_df.groupby('Date').agg(
-        Average_HR=('heart_rate', 'mean')
-    ).reset_index()
+    average_stress_per_hour = calculate_averages(stress_data_df, 'score', 'hour', 'average_value', 'Stress')
+    average_stress_per_day = calculate_averages(stress_data_df, 'score', 'Date', 'average_value', 'Stress')
+    average_stress_per_day_of_week = calculate_averages(stress_data_df, 'score', 'day_of_week', 'average_value', 'Stress')
+    average_stress_per_week = calculate_weekly_averages(stress_data_df, 'score', 'average_value', 'Stress')
 
-if stress_data_zip and heart_rate_data_zip:
+    average_heart_rate_per_hour = calculate_averages(heart_rate_data_df, 'heart_rate', 'hour', 'average_value', 'Heart Rate')
+    average_heart_rate_per_day = calculate_averages(heart_rate_data_df, 'heart_rate', 'Date', 'average_value', 'Heart Rate')
+    average_heart_rate_per_day_of_week = calculate_averages(heart_rate_data_df, 'heart_rate', 'day_of_week', 'average_value', 'Heart Rate')
+    average_heart_rate_per_week = calculate_weekly_averages(heart_rate_data_df, 'heart_rate', 'average_value', 'Heart Rate')
 
-    # Merge average stress and heart rate per hour
     combined_hourly_df = pd.concat([average_stress_per_hour, average_heart_rate_per_hour], ignore_index=True)
-
-    # Plot average stress and heart rate per hour
-    if 'hour' in combined_hourly_df.columns:
-        st.subheader("Average Stress and Heart Rate Per Hour")
-        stress_heart_rate_hourly_chart = alt.Chart(combined_hourly_df).mark_circle(size=60).encode(
-            x='hour:O',
-            y='average_value:Q',
-            color=alt.Color('data_type:N', scale=alt.Scale(domain=['Stress', 'Heart Rate'], range=['purple', 'steelblue'])),
-            tooltip=['hour:O', 'average_value:Q']
-        ).properties(
-            width=800,
-            height=400
-        ).interactive()
-
-        st.altair_chart(stress_heart_rate_hourly_chart, use_container_width=True)
-    else:
-        st.warning("No data available to plot.")
-
-    # Process stress data if uploaded
-    if stress_data_zip:
-        stress_data_df = process_stress_data_from_zip(stress_data_zip, 'score')
-        if 'day_of_week' not in stress_data_df.columns:
-            st.error("Day of week column missing in stress data.")
-        else:
-            # Calculate average stress score per day of week
-            average_stress_per_day_of_week = stress_data_df.groupby('day_of_week').agg(
-                average_value=('score', 'mean')
-            ).reset_index()
-            average_stress_per_day_of_week['data_type'] = 'Stress'  # Add data type for legend
-
-    # Process heart rate data if uploaded
-    if heart_rate_data_zip:
-        heart_rate_data_df = process_heart_rate_data_from_zip(heart_rate_data_zip, 'heart_rate')
-        if 'day_of_week' not in heart_rate_data_df.columns:
-            st.error("Day of week column missing in heart rate data.")
-        else:
-            # Calculate average heart rate per day of week
-            average_heart_rate_per_day_of_week = heart_rate_data_df.groupby('day_of_week').agg(
-                average_value=('heart_rate', 'mean')
-            ).reset_index()
-            average_heart_rate_per_day_of_week['data_type'] = 'Heart Rate'  # Add data type for legend
-
-    # Merge average stress and heart rate per day of week
+    combined_daily_df = pd.concat([average_stress_per_day, average_heart_rate_per_day], ignore_index=True)
     combined_daily_of_week_df = pd.concat([average_stress_per_day_of_week, average_heart_rate_per_day_of_week], ignore_index=True)
-
-    # Plot average stress and heart rate per day of week
-    if 'day_of_week' in combined_daily_of_week_df.columns:
-        st.subheader("Average Stress and Heart Rate Per Day of Week")
-        stress_heart_rate_day_of_week_chart = alt.Chart(combined_daily_of_week_df).mark_circle(size=60).encode(
-            x=alt.X('day_of_week:N', sort=['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']),
-            y='average_value:Q',
-            color=alt.Color('data_type:N', scale=alt.Scale(domain=['Stress', 'Heart Rate'], range=['purple', 'steelblue'])),
-            tooltip=['day_of_week:N', 'average_value:Q']
-        ).properties(
-            width=800,
-            height=400
-        ).interactive()
-
-        st.altair_chart(stress_heart_rate_day_of_week_chart, use_container_width=True)
-    else:
-        st.warning("No data available to plot.")
-
-    # Process stress data if uploaded
-    if stress_data_zip:
-        stress_data_df = process_stress_data_from_zip(stress_data_zip, 'score')
-        if 'week_in_year' not in stress_data_df.columns:
-            st.error("Week in year column missing in stress data.")
-        else:
-            # Calculate average stress score per week in year
-            average_stress_per_week = stress_data_df.groupby('week_in_year').agg(
-                average_value=('score', 'mean'),
-                week_start_date=('start_time', lambda x: (x.min() - timedelta(days=x.min().weekday())).strftime('%Y-%m-%d'))
-            ).reset_index()
-            average_stress_per_week['data_type'] = 'Stress'  # Add data type for legend
-
-    # Process heart rate data if uploaded
-    if heart_rate_data_zip:
-        heart_rate_data_df = process_heart_rate_data_from_zip(heart_rate_data_zip, 'heart_rate')
-        if 'week_in_year' not in heart_rate_data_df.columns:
-            st.error("Week in year column missing in heart rate data.")
-        else:
-            # Calculate average heart rate per week in year
-            average_heart_rate_per_week = heart_rate_data_df.groupby('week_in_year').agg(
-                average_value=('heart_rate', 'mean'),
-                week_start_date=('start_time', lambda x: (x.min() - timedelta(days=x.min().weekday())).strftime('%Y-%m-%d'))
-            ).reset_index()
-            average_heart_rate_per_week['data_type'] = 'Heart Rate'  # Add data type for legend
-
-    # Merge average stress and heart rate per week in year
     combined_weekly_df = pd.concat([average_stress_per_week, average_heart_rate_per_week], ignore_index=True)
 
-    # Plot average stress and heart rate per week in year
-    if 'week_in_year' in combined_weekly_df.columns:
-        st.subheader("Average Stress and Heart Rate Per Week in Year")
-        stress_heart_rate_weekly_chart = alt.Chart(combined_weekly_df).mark_circle(size=60).encode(
-            x=alt.X('week_start_date:T', axis=alt.Axis(title='Week Start Date')),
-            y='average_value:Q',
-            color=alt.Color('data_type:N', scale=alt.Scale(domain=['Stress', 'Heart Rate'], range=['purple', 'steelblue'])),
-            tooltip=['week_start_date:T', 'average_value:Q']
-        ).properties(
-            width=800,
-            height=400
-        ).interactive()
+    st.subheader("Average Stress and Heart Rate Per Hour")
+    st.altair_chart(plot_data(combined_hourly_df, 'hour', 'average_value', 'Hour', 'Average Value', "Average Stress and Heart Rate Per Hour", ['purple', 'steelblue']), use_container_width=True)
+    st.write(combined_hourly_df)
 
-        st.altair_chart(stress_heart_rate_weekly_chart, use_container_width=True)
-    else:
-        st.warning("No data available to plot.")
+    st.subheader("Average Stress and Heart Rate Per Day")
+    st.altair_chart(plot_data(combined_daily_df, 'Date', 'average_value', 'Date', 'Average Value', "Average Stress and Heart Rate Per Day", ['purple', 'steelblue']), use_container_width=True)
+    st.write(combined_daily_df)
+
+    st.subheader("Average Stress and Heart Rate Per Day of Week")
+    st.altair_chart(plot_data(combined_daily_of_week_df, 'day_of_week', 'average_value', 'Day of Week', 'Average Value', "Average Stress and Heart Rate Per Day of Week", ['purple', 'steelblue'], sort_x=['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']), use_container_width=True)
+    st.write(combined_daily_of_week_df)
+
+    st.subheader("Average Stress and Heart Rate Per Week in Year")
+    st.altair_chart(plot_data(combined_weekly_df, 'week_start_date', 'average_value', 'Week Start Date', 'Average Value', "Average Stress and Heart Rate Per Week in Year", ['purple', 'steelblue']), use_container_width=True)
+    st.write(combined_weekly_df)
+else:
+    st.warning("No data available to plot.")
 
 # Process data to create dataframe_days
 if awt_uploaded_file is not None and google_maps_uploaded_files and survey_uploaded_file and stress_data_zip and heart_rate_data_zip is not None:
@@ -498,8 +433,8 @@ if awt_uploaded_file is not None and google_maps_uploaded_files and survey_uploa
         dataframe_days = pd.DataFrame(day_rows)
 
         # Merge average stress and heart rate data with dataframe_days
-        dataframe_days = pd.merge(dataframe_days, average_stress_per_day, on='Date', how='left')
-        dataframe_days = pd.merge(dataframe_days, average_hr_per_day, on='Date', how='left')
+        dataframe_days = pd.merge(dataframe_days, average_stress_per_day.rename(columns={'average_value': 'Average_stress'}), on='Date', how='left')
+        dataframe_days = pd.merge(dataframe_days, average_heart_rate_per_day.rename(columns={'average_value': 'Average_HR'}), on='Date', how='left')
 
         # Display the dataframe_days in Streamlit
         st.write("Final dataframe_days:")
